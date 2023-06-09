@@ -3,8 +3,9 @@ import numpy as np
 class KaizojiModel:
     def __init__(self,
         # MODEL
-        N_SIMULATIONS = 1000, # number of trading days within one simulation
+        N_SIMULATIONS = 5000, # number time ticks within one simulation
         N_TRADING_DAYS = 250, # number of trading days in a year
+        SEED = 42, # random seed
 
         # ASSETS
         R_F = 0.02, # risk-free return
@@ -12,13 +13,13 @@ class KaizojiModel:
         R_D = 0.04, # mean growth rate of dividends
         STD_D = 0.01, # standard deviation of risky asset's dividend
         P_ZERO = 1,  # initial price of a risky asset
-        STD_RISKY_RET = 0.015,  # std of (p_t/p_(t-1) - 1)
+        STD_RISKY_RET = 0.45,  # std of (p_t/p_(t-1) - 1)
         N_RISKY_ASSETS = 1, # number of risky assets
         EXPECT_RISKY_RET = 0.04,  # expectation(p_t/p_(t-1) - 1)
 
         # NOISY
         FRAC_N_ASSETS_ZERO = 0.3, # initial fraction of risky assets noisy
-        W_N_ZERO = 1E4, # initial wealth of noisy
+        W_N_ZERO = 1E7, # initial wealth of noisy
         C_H = 1, # momentum weight
         C_S = 1, # opinion weight
         P_FROM_R_TO_F_ZERO = 0.2, # control probability to switch from risky to free for noisy (2.16 near)
@@ -31,17 +32,19 @@ class KaizojiModel:
         K_ZERO = 0.98 * 0.2, # initial social coupling strength
         MEAN_COUP = 0.98 * 0.2, # Mean of the OU social coupling strength
         ETA_COUP = 0.11, # Mean reversion of the OU social coupling strength #FIXME можно формулу добавить ~70
-        STD_COUP = 0.001, # Standard deviation of the OU social coupling strength #FIXME можно формулу добавить ~71
+        STD_COUP = 0.016, # Standard deviation of the OU social coupling strength #FIXME можно формулу добавить ~71
 
         # FUNDAMENTALISTS
         FRAC_F_ASSETS_ZERO = 0.3, # initial fraction of risky assets fund
-        W_F_ZERO = 1E3, # initial wealth of fund
-        GAMMA = 1 # parameter in CRRA utility function
+        W_F_ZERO = 1E0, # initial wealth of fund
+        GAMMA = 0.6 # parameter in CRRA utility function
         ):
 
         # MODEL
         self.N_SIMULATIONS = N_SIMULATIONS  # number of trading days within one simulation
         self.N_TRADING_DAYS = N_TRADING_DAYS  # number of trading days in a year
+        # np.random.seed(SEED)
+        self.curr_day = 0 # current trading day
 
         # ASSETS
         self.R_F = R_F/N_TRADING_DAYS # risk-free return
@@ -76,7 +79,7 @@ class KaizojiModel:
         self.GAMMA = GAMMA # parameter in CRRA utility function
 
         # LOGGING
-        self.dividends = [D_ZERO]
+        self.dividends = [self.D_ZERO]
         self.fractions_risky_n = [FRAC_N_ASSETS_ZERO]
         self.prices = [P_ZERO]
         self.wealth_f = [W_F_ZERO]
@@ -84,16 +87,30 @@ class KaizojiModel:
         self.fractions_risky_f = [FRAC_F_ASSETS_ZERO]
         self.momentums = [H_ZERO]
         self.couplings = [K_ZERO]
-        self.p_free_to_risk_n = [P_FROM_F_TO_R_ZERO]
-        self.p_risk_to_free_n = [P_FROM_R_TO_F_ZERO]
-
-
-
-        #FIXME del
-        self.days = 0
+        self.p_free_to_risk_n = [P_FROM_F_TO_R_ZERO/2]  # divide by 2 to be consistent with formula for probability
+        self.p_risk_to_free_n = [P_FROM_R_TO_F_ZERO/2]
+        self.returns = [0.0]
 
 
     # MODEL
+    def get_sharpe_f(self):
+        # skip first 10 per cent as transtition phase
+        start = int(0.9*self.curr_day)
+        w_return = [self.wealth_f[k]/self.wealth_f[k-1] -1 for k in range(start, self.curr_day)]
+        # print(np.power(self.wealth_f[-1]/self.wealth_f[start], self.N_TRADING_DAYS/len(w_return)))
+        # print(self.R_F*self.N_TRADING_DAYS)
+        # print(np.std(w_return)*np.sqrt(self.N_TRADING_DAYS))
+        return (np.power(self.wealth_f[-1]/self.wealth_f[start], self.N_TRADING_DAYS/len(w_return))-1 - self.R_F*self.N_TRADING_DAYS)/(np.std(w_return)*np.sqrt(self.N_TRADING_DAYS))
+        #return (1/(len(w_return))*np.sum(w_return) - self.R_F)/np.std(w_return)
+
+    def get_sharpe_n(self):
+        # skip first 10 per cent as transtition phase
+        start = int(0.9*self.curr_day)
+        n_return = [self.wealth_n[k]/self.wealth_n[k-1] - 1 for k in range(start, self.curr_day)]
+
+        return (np.power(self.wealth_n[-1]/self.wealth_n[start], self.N_TRADING_DAYS/len(n_return))-1 - self.R_F*self.N_TRADING_DAYS)/(np.std(n_return)*np.sqrt(self.N_TRADING_DAYS))
+        #return (1/(len(n_return))*np.sum(n_return) - self.R_F)/np.std(n_return)
+
 
     def simulate(self, num_simulations = None):
         if num_simulations is None:
@@ -168,13 +185,20 @@ class KaizojiModel:
         r_to_f_n_curr = self.from_r_to_f(opinion_curr, self.momentums[-1], self.couplings[-1])
         self.p_risk_to_free_n.append(r_to_f_n_curr)
 
+        # compute daily returns
+        curr_return = self.prices[-1]/self.prices[-2] - 1
+        self.returns.append(curr_return)
+
+        # add day to make current timestamp
+        self.curr_day += 1
+
 
 
 # <------------------------------------------------------------------------------------------------------>
 
     # INVESTMENT UNIVERSE
-    def dividend_risky(self, prev_value):
-        return prev_value * (1 + np.random.normal(self.R_D, self.STD_D))  # FIXME нужно только один раз вызывать, потому что случайно
+    def dividend_risky(self, prev_div):
+        return prev_div * (1 + np.random.normal(self.R_D, self.STD_D))
 
     def price_level(self, prev_price, prev_w_f, prev_w_n, prev_frac_f, prev_frac_n, frac_n, div):
         aux_exc = (self.EXPECT_RISKY_RET - self.R_F) / (self.GAMMA * np.power(self.STD_RISKY_RET, 2))
@@ -191,19 +215,12 @@ class KaizojiModel:
         b = b_n + b_f
         c = c_n + c_f
 
-        # print('DAY', self.days)
-        # print('a_f', a_f)
-        # print('b_f', b_f)
-        # print('c_f', c_f)
-        # print('a_n', a_n)
-        # print('b_n', b_n)
-        # print('c_n', c_n)
-        # print('aux_exc', aux_exc)
-        # print('aux_free_div', aux_free_div)
-        # print('aux_div', aux_div)
-        # print('<----------------------------------------------------------------->')
-        self.days += 1
-        return max((-1*b + np.sqrt(np.power(b,2) - 4*a*c))/(2*a), (-1*b - np.sqrt(np.power(b,2) - 4*a*c))/(2*a))
+        if (-1*b - np.sqrt(np.power(b,2) - 4*a*c))/(2*a) > 0:
+            return (-1*b - np.sqrt(np.power(b,2) - 4*a*c))/(2*a)
+        elif (-1*b + np.sqrt(np.power(b,2) - 4*a*c))/(2*a) > 0:
+            return (-1*b + np.sqrt(np.power(b,2) - 4*a*c))/(2*a)
+        else:
+            return 0
 
     def capital_return(self, price, prev_price): # ~3
         return price/prev_price - 1
@@ -242,10 +259,10 @@ class KaizojiModel:
         return self.MEMORY * prev_p_m + (1-self.MEMORY)*cap_ret
 
     def from_r_to_f(self, opin, p_m, k):  # 2.16  FIXME разные формулы в статьях
-        return self.P_FROM_R_TO_F_ZERO / 2 * (1-k*(opin + p_m))
+        return self.P_FROM_R_TO_F_ZERO/2  * (1-k*(opin + p_m))
 
     def from_f_to_r(self, opin, p_m, k):  # 2.16 FIXME разные формулы в статьях
-        return self.P_FROM_F_TO_R_ZERO / 2 * (1+k*(opin + p_m))
+        return self.P_FROM_F_TO_R_ZERO/2  * (1+k*(opin + p_m))
 
     def k_coupling_strength(self, prev_k):  # 2.17
         return prev_k + self.ETA_COUP * (self.MEAN_COUP - prev_k) + self.STD_COUP*np.random.standard_normal()
@@ -267,8 +284,6 @@ class KaizojiModel:
 
     def excess_demand_noisy(self, wealth, prev_wealth, share, prev_share, price, prev_price):  # 2.22
         return share*wealth - prev_share * prev_wealth * price / prev_price
-
-
 
 
 
